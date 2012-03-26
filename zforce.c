@@ -691,33 +691,20 @@ static int process_touch_event(struct zforce *tsc, u8* payload)
 				payload[7+i*ZF_COORDATA_SIZE] );
 		printk("\n");
 	}
-	if (count != 1)
-	{
-		dev_dbg(&tsc->client->dev, "Invalid number of coordinates: %d\n", count);
-	}
 	#endif
-	memcpy(&x, &payload[1], sizeof(u16));
-	memcpy(&y, &payload[3], sizeof(u16));
-	status = payload[5];
 
 	if (major == 1)
 	{
+		memcpy(&x, &payload[1], sizeof(u16));
+		memcpy(&y, &payload[3], sizeof(u16));
+		status = payload[5];
 		state = status & 0x03;
 		id = 1;
-	}
-	else
-	{
-		state = (status & 0xC0) >> 6;
-		id =    (status & 0x3C) >> 2;
-	}
-
-	//x = 600 - x;
-	if (major == 1)
 		y = 800 - y;
 
-	// Process
-	switch (state)
-	{
+		// Process
+		switch (state)
+		{
 		case STATE_MOVE:
 			dev_dbg(&tsc->client->dev, "%d move(%d,%d)\n", id, x, y);
 			input_report_abs(tsc->input, ABS_X, x);
@@ -741,10 +728,10 @@ static int process_touch_event(struct zforce *tsc, u8* payload)
 		default:
 			dev_err(&tsc->client->dev, "Invalid state: %d\n", state);
 			return (count * size) + 1;
+		}
+		input_sync(tsc->input);
 	}
-	input_sync(tsc->input);
-
-	if (major > 1)
+	else
 	{
 		int i;
 		update_tinfo(tsc, payload);
