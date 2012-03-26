@@ -746,7 +746,7 @@ static int process_touch_event(struct zforce *tsc, u8* payload)
 
 	if (major > 1)
 	{
-		int i, sync = 0;
+		int i;
 		update_tinfo(tsc, payload);
 		for (i = 0; i < ZF_NUM_FINGER_SUPPORT; i++)
 		{
@@ -757,13 +757,10 @@ static int process_touch_event(struct zforce *tsc, u8* payload)
 			input_report_abs(tsc->input, ABS_MT_POSITION_Y, tinfo[i].y);
 			input_report_abs(tsc->input, ABS_MT_TOUCH_MAJOR, tinfo[i].z);
 			input_mt_sync(tsc->input);
-			sync++;
 
 			if (tinfo[i].state == STATE_UP)
 				tinfo[i].valid = 0;
 		}
-		if (sync == 0)
-			input_mt_sync(tsc->input);
 		input_sync(tsc->input);
 	}
 
