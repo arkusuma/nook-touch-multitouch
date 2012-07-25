@@ -47,11 +47,13 @@
 #define COMMAND_SETCONFIGN	0x03
 #define COMMAND_DATAREQUEST	0x04
 #define COMMAND_SCANFREQ	0x08
-#define COMMAND_VERSION    	0x0A
+#define COMMAND_VERSION		0x0A
 #define COMMAND_PULSESTRENG	0x0F
 #define COMMAND_LEVEL		0x1C
 #define COMMAND_FORCECAL	0X1A
 #define COMMAND_STATUS		0X1E
+#define COMMAND_BIST		0X21
+
 
 // Responses
 #define RESPONSE_DEACTIVATE	0x00
@@ -64,10 +66,18 @@
 #define RESPONSE_PULSESTRENG	0x0F
 #define RESPONSE_LEVEL		0x1C
 #define RESPONSE_STATUS		0X1E
+#define RESPONSE_BIST		0X21
 #define RESPONSE_INVALID	0xFE
 
 // Platform specific
 #define ZF_COORDATA_SIZE 7
+
+#define ZF_BIST_XDATA_LEN 7
+#define ZF_BIST_YDATA_LEN 9
+
+DEFINE_MUTEX(zForce_sysfs_mutex);
+
+static int zforce_synchronized_wait_for_completion_timeout(struct completion *res);
 
 static struct workqueue_struct *zforce_wq;
 
@@ -80,6 +90,8 @@ struct zforce {
 	struct work_struct	work;
 	char			phys[32];
 	u8	zf_status_info[64];
+	u8	zf_bist_xresult[ZF_BIST_XDATA_LEN]; //include the axis in 1st byte
+	u8	zf_bist_yresult[ZF_BIST_YDATA_LEN]; //TODO make it more generic; once comm spec is finalized.
 	int	err_cnt;
 };
 
@@ -124,7 +136,7 @@ static ssize_t deep_sleep_store(struct device *dev,
 // #######
 static int send_data_request(struct zforce *tsc)
 {
-	int ret;
+	int ret = 0;
 	int retry = 3;
 
 	dev_dbg(&tsc->client->dev, "%s()\n", __FUNCTION__);
@@ -169,11 +181,11 @@ static int send_resolution(struct zforce *tsc, u16 width, u16 height)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -203,11 +215,11 @@ static int send_setconfig(struct zforce *tsc, u32 setconfig)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -236,11 +248,11 @@ static int send_pulsestreng(struct zforce *tsc, u8 strength, u8 time)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -269,14 +281,45 @@ static int send_status_request(struct zforce *tsc)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
+// BIST Request
+// ############################
+static int send_bist_request(struct zforce *tsc, u8 axis)
+{
+	struct i2c_msg msg[2];
+	u8 request[2];
+	int ret;
+
+	dev_info(&tsc->client->dev, "%s\n", __FUNCTION__);
+
+	request[0] = COMMAND_BIST;
+	request[1] = axis;
+	msg[0].addr = tsc->client->addr;
+	msg[0].flags = 0;
+	msg[0].len = 2;
+	msg[0].buf = request;
+
+	ret = i2c_transfer(tsc->client->adapter, msg, 1);
+	if (ret < 0)
+	{
+		dev_err(&tsc->client->dev, "i2c send status error: %d\n", ret);
+		return ret;
+	}
+
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
+
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
+	return tsc->command_result;
+}
 // DEACTIVATE Request
 // [0:cmd]
 // #######
@@ -299,11 +342,11 @@ static int send_cmd_request(struct zforce *tsc, u8 cmd)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -329,11 +372,11 @@ static int send_deactivate_request(struct zforce *tsc)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -343,7 +386,7 @@ static int send_deactivate_request(struct zforce *tsc)
 // #######
 static int send_activate_request(struct zforce *tsc)
 {
-	int ret;
+	int ret = 0 ;
 	int retry = 3;
 
 	dev_dbg(&tsc->client->dev, "%s()\n", __FUNCTION__);
@@ -360,11 +403,11 @@ static int send_activate_request(struct zforce *tsc)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
-	// I2C opperations was successful
-	// Return the results from the controler. (0 == success)
+	// I2C operations was successful
+	// Return the results from the controller. (0 == success)
 	return tsc->command_result;
 }
 
@@ -403,8 +446,8 @@ static int send_version_request(struct zforce *tsc)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
 	return tsc->command_result;
 }
@@ -449,13 +492,15 @@ static int send_level_request(struct zforce *tsc)
 		return ret;
 	}
 
-	if (wait_for_completion_timeout(&tsc->command_done, WAIT_TIMEOUT) == 0)
-		return -1;
+	if (zforce_synchronized_wait_for_completion_timeout(&tsc->command_done) == 0)
+		return -ETIMEDOUT;
 
 	return tsc->command_result;
 }
 #define ZF_NUMX 11
 #define ZF_NUMY 15
+#define ZF_X_AXIS 0
+#define ZF_Y_AXIS 1
 #define ZF_LEDDATA_LEN (2+(ZF_NUMX + ZF_NUMY)*3)
 static u8 ledlevel[ZF_LEDDATA_LEN];
 
@@ -610,6 +655,30 @@ static int process_status_response(struct zforce *tsc, u8* payload)
 	return ZF_STATUS_SIZE;
 }
 
+static int process_bist_response(struct zforce *tsc, const u8* payload)
+{
+	u8 *pyld =  NULL;
+	u8 len = 0;
+
+	dev_dbg(&tsc->client->dev, "%s()\n", __FUNCTION__);
+
+	if( payload[0] == ZF_X_AXIS )
+	{
+		pyld = (u8 *)tsc->zf_bist_xresult;
+		len = ZF_BIST_XDATA_LEN;
+	}
+	else if( payload[0] == ZF_Y_AXIS )
+	{
+		pyld = (u8 *)tsc->zf_bist_yresult;
+		len = ZF_BIST_YDATA_LEN;
+	}
+	else
+	{
+		return 1;
+	}
+	memcpy(pyld, payload, len);
+	return len;
+}
 static void update_tinfo(struct zforce *tsc, u8* payload)
 {
 	int count = payload[0];
@@ -639,6 +708,7 @@ static void update_tinfo(struct zforce *tsc, u8* payload)
 		tinfo[id - 1].valid = 1;
 	}
 }
+
 
 // Touch Payload Results
 // [1:count] [2:x] [2:y] [1:state]
@@ -798,6 +868,20 @@ static int read_packet(struct zforce *tsc, u8 *buffer)
 	return 0;
 }
 
+static int zforce_synchronized_wait_for_completion_timeout(struct completion *res)
+{
+	int ret = 0;
+
+	mutex_lock(&zForce_sysfs_mutex);
+	ret = wait_for_completion_timeout(res, WAIT_TIMEOUT);
+	mutex_unlock(&zForce_sysfs_mutex);
+
+	if (ret)
+		return 1;
+
+	return 0;
+}
+
 // Response Bytes
 // [1:0xEE] [1:len] [len:payload]
 // ##############################
@@ -858,6 +942,12 @@ static void zforce_tsc_work_func(struct work_struct *work)
 			complete(&tsc->command_done);
 			break;
 			
+		case  RESPONSE_BIST:
+			cmd_len = process_bist_response(tsc, &payload[RESPONSE_DATA]);
+			tsc->command_result = 0;
+			complete(&tsc->command_done);
+			break;
+
 		case  RESPONSE_INVALID:
 			cmd_len = 1;
 			dev_err(&tsc->client->dev, "Invalid Command ID: %d\n(TC%d)", payload[RESPONSE_DATA], ++(tsc->err_cnt) );
@@ -1013,12 +1103,26 @@ static ssize_t zforce_versions_show(struct device *dev,
 {
 	int cnt = 0;
 	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
-	struct zforce *tsc = i2c_get_clientdata(client); 
+	struct zforce *tsc = NULL;
+	int ret = 0;
+
+
+	if (client){
+		tsc  = i2c_get_clientdata(client);
+	}
 
 	zforce_info("Request fw ver from zforce\n");
-	if (send_version_request(tsc))
-	{
-		dev_err(&client->dev, "UnableToRequestVersion\n");
+
+	if (!zforce_wq){/*DRIVER PROBE FAILED */
+		cnt = cnt + sprintf(&buf[cnt],"%04x:%04x %04x:%04x\n", 0, 0, 0, 0);
+		printk("sending touch firmware version 00000\n");
+		return cnt;
+	}
+	else if (tsc){
+		ret = send_version_request(tsc);
+		if (ret){
+			dev_err(&client->dev, "UnableToRequestVersion\n");
+		}
 	}
 	cnt = cnt + sprintf(&buf[cnt],"%04x:%04x %04x:%04x\n", major, minor, build, rev);
 
@@ -1298,16 +1402,61 @@ static ssize_t zforce_zfstatus_show(struct device *dev,
 	return cnt;
 }
 
+// =-=-=-=-=-=-=-=-=-=-=-=-=
+//  Zforce BIST
+// =-=-=-=-=-=-=-=-=-=-=-=-=
+static ssize_t zforce_bist_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	int i, cnt = 0, ret = 0;
+	struct i2c_client *client = container_of(dev, struct i2c_client, dev);
+	struct zforce *tsc = i2c_get_clientdata(client);
+	u8 *payload = (u8 *)tsc->zf_bist_xresult;
+
+	zforce_info("Zforce internal status strength\n");
+
+	// run open and short test for x axis
+	ret = send_bist_request(tsc, ZF_X_AXIS);
+	if(ret)
+	{
+		dev_err(&client->dev, "Unable to retrieve zforce status: %x.\n", ret);
+		return -EINVAL;
+	}
+
+	// run open and short test for y axis
+	ret = send_bist_request(tsc, ZF_Y_AXIS);
+	if(ret)
+	{
+		dev_err(&client->dev, "Unable to retrieve zforce status: %x.\n", ret);
+		return -EINVAL;
+	}
+
+	cnt = cnt + sprintf(&buf[cnt],"BISTX:");
+	for( i=0; i<ZF_BIST_XDATA_LEN; i++ )
+	{
+		cnt = cnt + sprintf(&buf[cnt]," %02X", payload[i] );
+	}
+
+	payload = (u8 *)tsc->zf_bist_yresult;
+	cnt = cnt + sprintf(&buf[cnt],"\nBISTY:");
+	for( i=0; i<ZF_BIST_YDATA_LEN; i++ )
+	{
+		cnt = cnt + sprintf(&buf[cnt]," %02X", payload[i] );
+	}
+	cnt = cnt + sprintf(&buf[cnt], "\n");
+	return cnt;
+}
+
+
 
 static DEVICE_ATTR(ledlevel, S_IRUGO|S_IWUSR, zforce_ledlevel_show, zforce_ledlevel_store);
 static DEVICE_ATTR(versions, S_IRUGO|S_IWUSR, zforce_versions_show, zforce_versions_store);
 static DEVICE_ATTR(forcecal, S_IRUGO|S_IWUSR, zforce_forcecal_show, zforce_forcecal_store);
 static DEVICE_ATTR(fixps, S_IRUGO|S_IWUSR, zforce_pulsestrength_show, zforce_pulsestrength_store);
-static DEVICE_ATTR(zfstatus,	S_IRUGO, zforce_zfstatus_show, NULL);
-static DEVICE_ATTR(on_off,		S_IWUSR, NULL, zforce_on_off_store);
-static DEVICE_ATTR(cmd,		S_IWUSR, NULL, zforce_cmd_store);
-
-
+static DEVICE_ATTR(zfstatus, S_IRUGO, zforce_zfstatus_show, NULL);
+static DEVICE_ATTR(bist, S_IRUGO, zforce_bist_show, NULL);
+static DEVICE_ATTR(on_off, S_IWUSR, NULL, zforce_on_off_store);
+static DEVICE_ATTR(cmd,	S_IWUSR, NULL, zforce_cmd_store);
 
 static struct attribute *zforce_attributes[] = {
 	&dev_attr_ledlevel.attr,
@@ -1315,6 +1464,7 @@ static struct attribute *zforce_attributes[] = {
 	&dev_attr_forcecal.attr,
 	&dev_attr_fixps.attr,
 	&dev_attr_zfstatus.attr,
+	&dev_attr_bist.attr,
 	&dev_attr_on_off.attr,
 	&dev_attr_cmd.attr,
 	NULL
